@@ -59,11 +59,11 @@ def generate_shader(saturation: float) -> str:
 precision mediump float;
 
 uniform sampler2D tex;
-uniform vec2 iResolution;
+uniform vec2 size;
 out vec4 fragColor;
 
 void main() {{
-    vec2 texCoord = gl_FragCoord.xy / iResolution;
+    vec2 texCoord = gl_FragCoord.xy / size;
     vec4 color = texture(tex, texCoord);
     float grey = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
     vec3 saturated = mix(vec3(grey), color.rgb, {saturation:.2f});
@@ -78,20 +78,21 @@ def _update_lua_config(shader_path: str) -> bool:
         with open(HYPR_CONFIG, "r") as f:
             content = f.read()
         
-        old_line = 'screen_shader = os.getenv("HOME")'
-        if old_line in content:
-            # Replace existing line
-            import re
+        # Match both commented and uncommented lines
+        import re
+        pattern = r'(\s*)(--\s*)?screen_shader\s*=\s*os\.getenv\("HOME"\)\s*\.\.\s*"[^"]*"'
+        
+        if re.search(pattern, content):
             content = re.sub(
-                r'screen_shader\s*=\s*os\.getenv\("HOME"\)\s*\.\.\s*"[^"]*"',
-                f'screen_shader = os.getenv("HOME") .. "{shader_path}"',
+                pattern,
+                f'\\1screen_shader = os.getenv("HOME") .. "{shader_path}"',
                 content
             )
         else:
-            # Add after screen_shader or after blur block
+            # Insert after the blur block closing brace
             content = content.replace(
-                'screen_shader = ""',
-                f'screen_shader = os.getenv("HOME") .. "{shader_path}"'
+                '            },\n\n    },',
+                f'            }},\n\n        screen_shader = os.getenv("HOME") .. "{shader_path}",\n    }},'
             )
         
         with open(HYPR_CONFIG, "w") as f:
