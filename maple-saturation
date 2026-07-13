@@ -1,0 +1,331 @@
+#!/usr/bin/python3
+"""
+Maple Saturation Control — Hyprland Edition
+Control de saturación via GLSL shader para Hyprland.
+"""
+import sys
+import os
+import json
+import subprocess
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QSlider, QPushButton, QGroupBox, QDoubleSpinBox
+)
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QColor, QPalette
+
+# ── Config ─────────────────────────────────────────────────────────────
+CONFIG_DIR = os.path.expanduser("~/.config/hypr/shaders")
+SHADER_FILE = os.path.join(CONFIG_DIR, "saturation.glsl")
+SETTINGS_DIR = os.path.expanduser("~/.config/maple_saturation")
+SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
+
+# ── Theme ──────────────────────────────────────────────────────────────
+class Theme:
+    BG = "#0B0B14"
+    SURFACE = "#121225"
+    PRIMARY = "#CBA6F7"
+    TEXT = "#CDD6F4"
+    TEXT_DIM = "#7F849C"
+    BORDER = "#23233B"
+    SLIDER_BG = "#11111B"
+    INPUT_BG = "#1E1E2E"
+
+    GROUP_STYLE = f"""
+        QGroupBox {{
+            border: 1px solid {BORDER};
+            border-radius: 10px;
+            margin-top: 14px;
+            padding-top: 8px;
+            background-color: {SURFACE};
+        }}
+        QGroupBox::title {{
+            subcontrol-origin: margin;
+            subcontrol-position: top center;
+            padding: 2px 12px;
+            background-color: {BG};
+            border-radius: 4px;
+            color: {PRIMARY};
+            font-size: 10px;
+            letter-spacing: 1px;
+        }}
+    """
+
+# ── Shader generation ──────────────────────────────────────────────────
+def generate_shader(saturation: float) -> str:
+    return f"""#version 320 es
+// Maple Saturation Shader — Hyprland
+// Saturation: {saturation:.2f}
+precision mediump float;
+
+uniform sampler2D tex;
+uniform vec2 iResolution;
+out vec4 fragColor;
+
+void main() {{
+    vec2 texCoord = gl_FragCoord.xy / iResolution;
+    vec4 color = texture(tex, texCoord);
+    float grey = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
+    vec3 saturated = mix(vec3(grey), color.rgb, {saturation:.2f});
+    fragColor = vec4(saturated, color.a);
+}}"""
+
+HYPR_CONFIG = os.path.expanduser("~/.config/hypr/hyprland.lua")
+
+def _update_lua_config(shader_path: str) -> bool:
+    """Update screen_shader in hyprland.lua and reload."""
+    try:
+        with open(HYPR_CONFIG, "r") as f:
+            content = f.read()
+        
+        old_line = 'screen_shader = os.getenv("HOME")'
+        if old_line in content:
+            # Replace existing line
+            import re
+            content = re.sub(
+                r'screen_shader\s*=\s*os\.getenv\("HOME"\)\s*\.\.\s*"[^"]*"',
+                f'screen_shader = os.getenv("HOME") .. "{shader_path}"',
+                content
+            )
+        else:
+            # Add after screen_shader or after blur block
+            content = content.replace(
+                'screen_shader = ""',
+                f'screen_shader = os.getenv("HOME") .. "{shader_path}"'
+            )
+        
+        with open(HYPR_CONFIG, "w") as f:
+            f.write(content)
+        
+        # Reload Hyprland
+        result = subprocess.run(["hyprctl", "reload"],
+                               capture_output=True, text=True, timeout=5)
+        return result.returncode == 0
+    except Exception as e:
+        print(f"Config error: {e}")
+        return False
+
+def set_shader(saturation: float) -> bool:
+    """Apply saturation shader via Hyprland config reload."""
+    if saturation == 1.0:
+        # Remove shader file, use empty path
+        if os.path.exists(SHADER_FILE):
+            os.remove(SHADER_FILE)
+        _update_lua_config("")
+        return True
+    
+    shader = generate_shader(saturation)
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(SHADER_FILE, "w") as f:
+        f.write(shader)
+    
+    return _update_lua_config("/.config/hypr/shaders/saturation.glsl")
+
+# ── Settings ───────────────────────────────────────────────────────────
+def load_settings() -> dict:
+    defaults = {"saturation": 1.0}
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE) as f:
+                defaults.update(json.load(f))
+        except:
+            pass
+    return defaults
+
+def save_settings(s: dict):
+    os.makedirs(SETTINGS_DIR, exist_ok=True)
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(s, f, indent=2)
+
+# ── Slider widget ──────────────────────────────────────────────────────
+class LabeledSlider(QWidget):
+    def __init__(self, label, min_v, max_v, default, step=0.01, suffix="x", parent=None):
+        super().__init__(parent)
+        self._scale = int(1 / step)
+        self._callback = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        header = QHBoxLayout()
+        lbl = QLabel(label)
+        lbl.setStyleSheet(f"color: {Theme.TEXT}; font-size: 13px; font-weight: 600;")
+        header.addWidget(lbl)
+        header.addStretch()
+
+        self.spin = QDoubleSpinBox()
+        self.spin.setRange(min_v, max_v)
+        self.spin.setSingleStep(step)
+        self.spin.setDecimals(2)
+        self.spin.setValue(default)
+        self.spin.setSuffix(suffix)
+        self.spin.setFixedWidth(80)
+        self.spin.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.spin.setStyleSheet(f"""
+            QDoubleSpinBox {{
+                background-color: {Theme.INPUT_BG}; color: {Theme.PRIMARY};
+                border: 1px solid {Theme.BORDER}; border-radius: 6px;
+                padding: 4px 8px; font-size: 14px; font-weight: bold;
+            }}
+        """)
+        header.addWidget(self.spin)
+        layout.addLayout(header)
+
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setMinimum(int(min_v * self._scale))
+        self.slider.setMaximum(int(max_v * self._scale))
+        self.slider.setValue(int(default * self._scale))
+        self.slider.setStyleSheet(f"""
+            QSlider::groove:horizontal {{
+                border: 1px solid {Theme.BORDER}; height: 6px;
+                background: {Theme.SLIDER_BG}; border-radius: 3px;
+            }}
+            QSlider::handle:horizontal {{
+                background: {Theme.PRIMARY}; border: none;
+                width: 18px; height: 18px; margin: -6px 0; border-radius: 9px;
+            }}
+            QSlider::handle:horizontal:hover {{ background: #B4BEFE; }}
+        """)
+        layout.addWidget(self.slider)
+
+        self.slider.valueChanged.connect(self._on_slider)
+        self.spin.valueChanged.connect(self._on_spin)
+
+    def _on_slider(self, v):
+        fv = v / self._scale
+        self.spin.blockSignals(True)
+        self.spin.setValue(fv)
+        self.spin.blockSignals(False)
+        if self._callback:
+            self._callback(fv)
+
+    def _on_spin(self, fv):
+        self.slider.blockSignals(True)
+        self.slider.setValue(int(fv * self._scale))
+        self.slider.blockSignals(False)
+        if self._callback:
+            self._callback(fv)
+
+    def value(self):
+        return self.spin.value()
+
+    def setValue(self, v):
+        self.spin.setValue(v)
+
+    def onChange(self, cb):
+        self._callback = cb
+
+# ── Main Window ────────────────────────────────────────────────────────
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Maple Saturation Control")
+        self.setMinimumWidth(400)
+        self.setMaximumWidth(500)
+
+        s = load_settings()
+
+        self._timer = QTimer()
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(100)
+        self._timer.timeout.connect(self._apply)
+
+        central = QWidget()
+        self.setCentralWidget(central)
+        main = QVBoxLayout(central)
+        main.setContentsMargins(16, 10, 16, 12)
+        main.setSpacing(8)
+
+        # Header
+        title = QLabel("MAPLE SATURATION CONTROL")
+        title.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 11px; font-weight: bold; letter-spacing: 2px;")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main.addWidget(title)
+
+        subtitle = QLabel("Hyprland + GLSL Shader")
+        subtitle.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 9px;")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main.addWidget(subtitle)
+
+        # Saturacion
+        sat_group = QGroupBox("SATURACION DE COLOR")
+        sat_group.setStyleSheet(Theme.GROUP_STYLE)
+        sat_layout = QVBoxLayout(sat_group)
+        sat_layout.setContentsMargins(12, 8, 12, 10)
+
+        self.sat = LabeledSlider("Intensidad", 0.0, 4.0, s["saturation"])
+        sat_layout.addWidget(self.sat)
+        main.addWidget(sat_group)
+
+        # Status + Reset
+        footer = QHBoxLayout()
+        self.status = QLabel("")
+        self.status.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 11px;")
+        footer.addWidget(self.status)
+
+        footer.addStretch()
+
+        btn_reset = QPushButton("Reset")
+        btn_reset.setFixedHeight(30)
+        btn_reset.setFixedWidth(80)
+        btn_reset.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Theme.INPUT_BG}; color: {Theme.TEXT_DIM};
+                border: 1px solid {Theme.BORDER}; border-radius: 6px;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{ background-color: {Theme.BORDER}; color: {Theme.TEXT}; }}
+        """)
+        btn_reset.clicked.connect(self._reset)
+        footer.addWidget(btn_reset)
+        main.addLayout(footer)
+
+        # Connect slider
+        self.sat.onChange(self._on_change)
+
+        self.setStyleSheet(f"""
+            QMainWindow {{ background-color: {Theme.BG}; }}
+            QWidget {{ background-color: {Theme.BG}; color: {Theme.TEXT};
+                       font-family: 'Inter', 'Segoe UI', 'Noto Sans', sans-serif; }}
+        """)
+
+        self._apply()
+
+    def _on_change(self, _):
+        self._timer.start()
+
+    def _apply(self):
+        sat = self.sat.value()
+        ok = set_shader(sat)
+        save_settings({"saturation": sat})
+        if ok:
+            self.status.setText(f"Sat {sat:.2f}x — shader applied")
+        else:
+            self.status.setText(f"Sat {sat:.2f}x — ERROR")
+
+    def _reset(self):
+        self.sat.setValue(1.0)
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor(Theme.BG))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor(Theme.TEXT))
+    palette.setColor(QPalette.ColorRole.Base, QColor(Theme.SURFACE))
+    palette.setColor(QPalette.ColorRole.Text, QColor(Theme.TEXT))
+    palette.setColor(QPalette.ColorRole.Button, QColor(Theme.SURFACE))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor(Theme.TEXT))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor(Theme.PRIMARY))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor(Theme.BG))
+    app.setPalette(palette)
+
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
