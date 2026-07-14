@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Maple Saturation Control
+Comment=Control de saturacion de pantalla para Hyprland
+Exec=/usr/bin/maple-saturation
+Icon=preferences-desktop-color
+Terminal=false
+Type=Application
+Categories=Settings;Utility;
+Keywords=color;saturation;hyprland;
