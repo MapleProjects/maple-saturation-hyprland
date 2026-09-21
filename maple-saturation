@@ -54,9 +54,9 @@ class Theme:
 # ── Shader generation ──────────────────────────────────────────────────
 def generate_shader(saturation: float) -> str:
     return f"""#version 320 es
-// Maple Saturation Shader — Hyprland
+// Maple Saturation Shader — Hyprland (Ultra Perceptual Vibrance & Detail Engine)
 // Saturation: {saturation:.2f}
-precision mediump float;
+precision highp float;
 
 in vec2 v_texcoord;
 uniform sampler2D tex;
@@ -69,9 +69,66 @@ void main() {{
         fragColor = color; // sin shader en monitores externos (HDMI)
         return;
     }}
-    float grey = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
-    vec3 saturated = mix(vec3(grey), color.rgb, {saturation:.2f});
-    fragColor = vec4(saturated, color.a);
+
+    float sat = {saturation:.2f};
+
+    const vec3 w = vec3(0.2126, 0.7152, 0.0722);
+    float luma = dot(color.rgb, w);
+
+    if (sat <= 1.0) {{
+        // Desaturacion lineal exacta hacia gris de luminancia Rec.709
+        fragColor = vec4(clamp(luma + sat * (color.rgb - luma), 0.0, 1.0), color.a);
+        return;
+    }}
+
+    // Medicion de croma (amplitud en espacio de color)
+    float cmax = max(color.r, max(color.g, color.b));
+    float cmin = min(color.r, min(color.g, color.b));
+    float chroma = cmax - cmin;
+
+    // Curva de vibrancia base: tonos apagados reciben mayor ganancia
+    float base_vibrance = 1.0 - 0.40 * chroma;
+
+    // Roll-off de altas luces: protege zonas muy expuestas a luz para evitar quemado
+    float luma_factor = clamp((luma - 0.35) / 0.55, 0.0, 1.0);
+    float highlight_damp = 1.0 - 0.85 * pow(luma_factor, 1.5);
+
+    // Proteccion de rostros y tonos calidos iluminados
+    float red_dominance = max(0.0, color.r - max(color.g, color.b));
+    float warm_factor = clamp(red_dominance * 2.5, 0.0, 1.0);
+    float warm_damp = 1.0 - 0.90 * warm_factor * (0.5 + 0.5 * luma_factor);
+
+    // Incremento efectivo modulado
+    float eff_boost = (sat - 1.0) * base_vibrance * highlight_damp * warm_damp;
+
+    // Expansion respecto a la media RGB para neutralidad de matiz
+    float m = (color.r + color.g + color.b) / 3.0;
+    vec3 expanded = m + (1.0 + eff_boost) * (color.rgb - m);
+
+    // Compresion de hombro suave tipo ACES (impide hard clipping plano en 1.0 o 0.0)
+    const float thresh = 0.82;
+    const float scale = 1.0 - thresh;
+    vec3 over = max(vec3(0.0), expanded - vec3(thresh));
+    vec3 comp_high = vec3(thresh) + scale * (over / (vec3(scale) + over));
+
+    vec3 under = max(vec3(0.0), vec3(1.0 - thresh) - expanded);
+    vec3 comp_low = vec3(1.0 - thresh) - (1.0 - thresh) * (under / (vec3(1.0 - thresh) + under));
+
+    vec3 compressed = mix(expanded, comp_high, step(vec3(thresh), expanded));
+    compressed = mix(compressed, comp_low, step(expanded, vec3(1.0 - thresh)));
+
+    // Reconstruccion de luminancia y anclaje de contraste en rostros
+    float luma_comp = dot(compressed, w);
+    float luma_ratio = (luma + 0.02) / (luma_comp + 0.02);
+
+    float anchor_weight = clamp(0.40 + 0.50 * (warm_factor + luma_factor), 0.0, 0.90);
+    vec3 full_saturated = compressed * mix(vec3(1.0), vec3(luma_ratio), anchor_weight);
+
+    // Transicion continua suave desde sat = 1.0
+    float blend_in = min(1.0, (sat - 1.0) / 0.30);
+    vec3 final_color = mix(m + sat * (color.rgb - m), full_saturated, blend_in);
+
+    fragColor = vec4(clamp(final_color, 0.0, 1.0), color.a);
 }}"""
 
 HYPR_CONFIG = os.path.expanduser("~/.config/hypr/hyprland.lua")
