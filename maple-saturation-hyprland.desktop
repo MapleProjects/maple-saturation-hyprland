@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Maple Saturation (Hyprland)
+GenericName=Display Color Control
+Comment=Saturation, contrast and gamma control for Hyprland via GLSL shader
+Exec=/usr/bin/maple-saturation-hyprland
+Icon=preferences-desktop-color
+Terminal=false
+Type=Application
+Categories=Settings;Utility;
+Keywords=color;saturation;contrast;gamma;hyprland;shader;
+StartupWMClass=maple-saturation-hyprland

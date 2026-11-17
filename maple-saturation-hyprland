@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 """
-Maple Saturation Control — Hyprland Edition
+Maple Saturation (Hyprland)
 Control de saturación, contraste y gamma vía GLSL shader para Hyprland.
 """
 import sys
@@ -17,8 +17,9 @@ from PyQt6.QtGui import QColor, QPalette
 # ── Config ─────────────────────────────────────────────────────────────
 CONFIG_DIR = os.path.expanduser("~/.config/hypr/shaders")
 SHADER_FILE = os.path.join(CONFIG_DIR, "saturation.glsl")
-SETTINGS_DIR = os.path.expanduser("~/.config/maple_saturation")
+SETTINGS_DIR = os.path.expanduser("~/.config/maple-saturation-hyprland")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
+LEGACY_SETTINGS_FILE = os.path.expanduser("~/.config/maple_saturation/settings.json")
 
 # ── Theme ──────────────────────────────────────────────────────────────
 class Theme:
@@ -133,9 +134,12 @@ def set_shader(saturation: float, contrast: float = 1.0, gamma: float = 1.0) -> 
 # ── Settings ───────────────────────────────────────────────────────────
 def load_settings() -> dict:
     defaults = {"saturation": 1.0, "contrast": 1.0, "gamma": 1.0}
-    if os.path.exists(SETTINGS_FILE):
+    path = SETTINGS_FILE
+    if not os.path.exists(path) and os.path.exists(LEGACY_SETTINGS_FILE):
+        path = LEGACY_SETTINGS_FILE
+    if os.path.exists(path):
         try:
-            with open(SETTINGS_FILE) as f:
+            with open(path) as f:
                 d = json.load(f)
                 defaults["saturation"] = float(d.get("saturation", 1.0))
                 defaults["contrast"] = float(d.get("contrast", 1.0))
@@ -232,7 +236,7 @@ class LabeledSlider(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Maple Saturation Control")
+        self.setWindowTitle("Maple Saturation (Hyprland)")
         self.setMinimumWidth(440)
         self.setMaximumWidth(520)
 
@@ -250,12 +254,12 @@ class MainWindow(QMainWindow):
         main.setSpacing(10)
 
         # Header
-        title = QLabel("MAPLE SATURATION CONTROL")
+        title = QLabel("MAPLE SATURATION")
         title.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 11px; font-weight: bold; letter-spacing: 2px;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main.addWidget(title)
 
-        subtitle = QLabel("Hyprland + GLSL Shader (Saturación, Contraste y Gamma)")
+        subtitle = QLabel("Hyprland · GLSL Shader · Saturación, Contraste y Gamma")
         subtitle.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 9px;")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main.addWidget(subtitle)
