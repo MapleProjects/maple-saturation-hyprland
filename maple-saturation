@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """
 Maple Saturation Control — Hyprland Edition
-Control de saturación via GLSL shader para Hyprland.
+Control de saturación, contraste y gamma vía GLSL shader para Hyprland.
 """
 import sys
 import os
@@ -52,10 +52,11 @@ class Theme:
     """
 
 # ── Shader generation ──────────────────────────────────────────────────
-def generate_shader(saturation: float) -> str:
+def generate_shader(saturation: float, contrast: float = 1.0, gamma: float = 1.0) -> str:
     return f"""#version 320 es
-// Maple Saturation Shader — Hyprland (OKLCH Perceptual Vibrance & Gamut Mapping Engine)
-// Saturation: {saturation:.2f} (solo eDP-1 / wl_output 0; HDMI sin efecto)
+// Maple Saturation Shader — Hyprland
+// Saturation: {saturation:.2f} | Contrast: {contrast:.2f} | Gamma: {gamma:.2f}
+// solo eDP-1 / wl_output 0; HDMI sin efecto
 precision highp float;
 
 in vec2 v_texcoord;
@@ -63,29 +64,9 @@ uniform sampler2D tex;
 uniform int wl_output; // id del monitor: eDP-1=0, HDMI-A-1=1
 layout(location = 0) out vec4 fragColor;
 
-const mat3 M1_srgb_to_lms = mat3(
-    vec3(0.4122214708, 0.2119034982, 0.0883024619),
-    vec3(0.5363325363, 0.6806995451, 0.2817188376),
-    vec3(0.0514459929, 0.1073969566, 0.6299787005)
-);
-
-const mat3 M2_lms_to_oklab = mat3(
-    vec3(0.2104542553, 1.9779984951, 0.0259040371),
-    vec3(0.7936177850, -2.4285922050, 0.7827717662),
-    vec3(-0.0040720468, 0.4505937099, -0.8086757660)
-);
-
-const mat3 M2_inv_oklab_to_lms = mat3(
-    vec3(0.9999999985, 1.0000000089, 1.0000000547),
-    vec3(0.3963377922, -0.1055613423, -0.0894841821),
-    vec3(0.2158037581, -0.0638541748, -1.2914855379)
-);
-
-const mat3 M1_inv_lms_to_srgb = mat3(
-    vec3(4.0767416613, -1.2684380041, -0.0041960865),
-    vec3(-3.3077115904, 2.6097574007, -0.7034186145),
-    vec3(0.2309699287, -0.3413193963, 1.7076147009)
-);
+const float u_sat = {saturation:.2f};
+const float u_con = {contrast:.2f};
+const float u_gam = {gamma:.2f};
 
 vec3 srgb_to_linear(vec3 c) {{
     vec3 low = c / 12.92;
@@ -100,24 +81,6 @@ vec3 linear_to_srgb(vec3 c) {{
     return mix(low, high, step(vec3(0.0031308), safe_c));
 }}
 
-vec3 srgb_to_oklab(vec3 rgb) {{
-    vec3 lin = srgb_to_linear(rgb);
-    vec3 lms = M1_srgb_to_lms * lin;
-    vec3 lms_ = pow(max(lms, vec3(0.0)), vec3(1.0 / 3.0));
-    return M2_lms_to_oklab * lms_;
-}}
-
-vec3 oklab_to_linear(vec3 lab) {{
-    vec3 lms_ = M2_inv_oklab_to_lms * lab;
-    vec3 lms = lms_ * lms_ * lms_;
-    return M1_inv_lms_to_srgb * lms;
-}}
-
-bool in_srgb_gamut(vec3 lab) {{
-    vec3 lin = oklab_to_linear(lab);
-    return all(greaterThanEqual(lin, vec3(0.0))) && all(lessThanEqual(lin, vec3(1.0)));
-}}
-
 void main() {{
     vec4 color = texture(tex, v_texcoord);
     if (wl_output != 0) {{
@@ -125,122 +88,59 @@ void main() {{
         return;
     }}
 
-    vec3 lab = srgb_to_oklab(color.rgb);
-    float L = lab.x;
-    vec2 ab = lab.yz;
-    float C = length(ab);
-
-    if (C < 0.0001) {{
+    // Bypass directo si todos los controles estan en su valor neutral (1.00)
+    if (abs(u_sat - 1.0) < 0.001 && abs(u_con - 1.0) < 0.001 && abs(u_gam - 1.0) < 0.001) {{
         fragColor = color;
         return;
     }}
 
-    float sat = {saturation:.2f};
+    // 1. Conversion a espacio lineal para calculos fisicos de color
+    vec3 lin = srgb_to_linear(color.rgb);
 
-    if (sat <= 1.0) {{
-        vec3 desat_lab = vec3(L, ab * sat);
-        vec3 lin = clamp(oklab_to_linear(desat_lab), 0.0, 1.0);
-        fragColor = vec4(linear_to_srgb(lin), color.a);
-        return;
+    // 2. Saturacion lineal sobre luminancia perceptual Rec. 709
+    // Se saturan uniformemente todos los colores sin sesgos ni cortes agresivos
+    float luma = dot(lin, vec3(0.2126, 0.7152, 0.0722));
+    vec3 sat_rgb = clamp(mix(vec3(luma), lin, u_sat), 0.0, 1.0);
+
+    // 3. Retorno a espacio perceptual sRGB
+    vec3 srgb = linear_to_srgb(sat_rgb);
+
+    // 4. Contraste individual (pivote 0.5 en sRGB)
+    if (abs(u_con - 1.0) >= 0.001) {{
+        srgb = clamp((srgb - vec3(0.5)) * u_con + vec3(0.5), 0.0, 1.0);
     }}
 
-    // Roll-off de altas luces: atenua el boost en zonas brillantes para preservar texturas
-    float luma_high = clamp((L - 0.65) / 0.35, 0.0, 1.0);
-    float highlight_damp = 1.0 - 0.70 * (luma_high * luma_high);
-
-    // Atenuacion en sombras muy profundas para evitar ruido
-    float shadow_damp = clamp(L / 0.08, 0.0, 1.0);
-
-    // Curva de vibrancia: tonos menos saturados reciben mayor realce relativo
-    float vibrance = 1.0 / (1.0 + 1.8 * C);
-
-    float boost = 1.0 + (sat - 1.0) * vibrance * highlight_damp * shadow_damp;
-    vec2 target_ab = ab * boost;
-    vec3 target_lab = vec3(L, target_ab);
-
-    vec3 mapped_lab;
-    if (in_srgb_gamut(target_lab)) {{
-        mapped_lab = target_lab;
-    }} else {{
-        // Mapeo biseccional en OKLCH: proyecta al borde del gamut sRGB a matiz y luminancia constantes
-        float t_low = 0.0;
-        float t_high = 1.0;
-        for (int i = 0; i < 6; i++) {{
-            float t_mid = 0.5 * (t_low + t_high);
-            vec3 test_lab = vec3(L, t_mid * target_ab);
-            if (in_srgb_gamut(test_lab)) {{
-                t_low = t_mid;
-            }} else {{
-                t_high = t_mid;
-            }}
-        }}
-        mapped_lab = vec3(L, t_low * target_ab);
+    // 5. Gamma individual (curva 1/gamma)
+    if (abs(u_gam - 1.0) >= 0.001) {{
+        srgb = pow(clamp(srgb, 0.0, 1.0), vec3(1.0 / max(u_gam, 0.01)));
     }}
 
-    vec3 final_lin = clamp(oklab_to_linear(mapped_lab), 0.0, 1.0);
-    fragColor = vec4(linear_to_srgb(final_lin), color.a);
+    fragColor = vec4(clamp(srgb, 0.0, 1.0), color.a);
 }}"""
 
-HYPR_CONFIG = os.path.expanduser("~/.config/hypr/hyprland.lua")
-
-def _update_lua_config(shader_path: str) -> bool:
-    """Update screen_shader in hyprland.lua and reload."""
-    try:
-        with open(HYPR_CONFIG, "r") as f:
-            content = f.read()
-        
-        # Match both commented and uncommented lines
-        import re
-        pattern = r'(\s*)(--\s*)?screen_shader\s*=\s*os\.getenv\("HOME"\)\s*\.\.\s*"[^"]*"'
-        
-        if re.search(pattern, content):
-            content = re.sub(
-                pattern,
-                f'\\1screen_shader = os.getenv("HOME") .. "{shader_path}"',
-                content
-            )
-        else:
-            # Insert after the blur block closing brace
-            content = content.replace(
-                '            },\n\n    },',
-                f'            }},\n\n        screen_shader = os.getenv("HOME") .. "{shader_path}",\n    }},'
-            )
-        
-        with open(HYPR_CONFIG, "w") as f:
-            f.write(content)
-        
-        # Reload Hyprland
-        result = subprocess.run(["hyprctl", "reload"],
-                               capture_output=True, text=True, timeout=5)
-        return result.returncode == 0
-    except Exception as e:
-        print(f"Config error: {e}")
-        return False
-
-def set_shader(saturation: float) -> bool:
-    """Apply saturation shader via Hyprland config reload."""
-    if saturation == 1.0:
-        # Remove shader file, use empty path
-        if os.path.exists(SHADER_FILE):
-            os.remove(SHADER_FILE)
-        _update_lua_config("")
-        return True
-    
-    shader = generate_shader(saturation)
+def set_shader(saturation: float, contrast: float = 1.0, gamma: float = 1.0) -> bool:
+    """Apply saturation, contrast and gamma shader via Hyprland config reload."""
+    shader = generate_shader(saturation, contrast, gamma)
     os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(SHADER_FILE, "w") as f:
         f.write(shader)
     
-    return _update_lua_config("/.config/hypr/shaders/saturation.glsl")
+    # Reload Hyprland
+    result = subprocess.run(["hyprctl", "reload"],
+                           capture_output=True, text=True, timeout=5)
+    return result.returncode == 0
 
 # ── Settings ───────────────────────────────────────────────────────────
 def load_settings() -> dict:
-    defaults = {"saturation": 1.0}
+    defaults = {"saturation": 1.0, "contrast": 1.0, "gamma": 1.0}
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE) as f:
-                defaults.update(json.load(f))
-        except:
+                d = json.load(f)
+                defaults["saturation"] = float(d.get("saturation", 1.0))
+                defaults["contrast"] = float(d.get("contrast", 1.0))
+                defaults["gamma"] = float(d.get("gamma", 1.0))
+        except Exception:
             pass
     return defaults
 
@@ -333,8 +233,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Maple Saturation Control")
-        self.setMinimumWidth(400)
-        self.setMaximumWidth(500)
+        self.setMinimumWidth(440)
+        self.setMaximumWidth(520)
 
         s = load_settings()
 
@@ -346,8 +246,8 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         main = QVBoxLayout(central)
-        main.setContentsMargins(16, 10, 16, 12)
-        main.setSpacing(8)
+        main.setContentsMargins(16, 12, 16, 14)
+        main.setSpacing(10)
 
         # Header
         title = QLabel("MAPLE SATURATION CONTROL")
@@ -355,20 +255,37 @@ class MainWindow(QMainWindow):
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main.addWidget(title)
 
-        subtitle = QLabel("Hyprland + GLSL Shader")
+        subtitle = QLabel("Hyprland + GLSL Shader (Saturación, Contraste y Gamma)")
         subtitle.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 9px;")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main.addWidget(subtitle)
 
-        # Saturacion
+        # 1. Saturacion
         sat_group = QGroupBox("SATURACION DE COLOR")
         sat_group.setStyleSheet(Theme.GROUP_STYLE)
         sat_layout = QVBoxLayout(sat_group)
         sat_layout.setContentsMargins(12, 8, 12, 10)
-
-        self.sat = LabeledSlider("Intensidad", 0.0, 4.0, s["saturation"])
+        self.sat = LabeledSlider("Intensidad", 0.0, 4.0, s["saturation"], step=0.01, suffix="x")
         sat_layout.addWidget(self.sat)
         main.addWidget(sat_group)
+
+        # 2. Contraste
+        con_group = QGroupBox("CONTRASTE")
+        con_group.setStyleSheet(Theme.GROUP_STYLE)
+        con_layout = QVBoxLayout(con_group)
+        con_layout.setContentsMargins(12, 8, 12, 10)
+        self.con = LabeledSlider("Contraste", 0.5, 2.0, s["contrast"], step=0.01, suffix="x")
+        con_layout.addWidget(self.con)
+        main.addWidget(con_group)
+
+        # 3. Gamma
+        gam_group = QGroupBox("GAMMA")
+        gam_group.setStyleSheet(Theme.GROUP_STYLE)
+        gam_layout = QVBoxLayout(gam_group)
+        gam_layout.setContentsMargins(12, 8, 12, 10)
+        self.gam = LabeledSlider("Gamma", 0.5, 2.0, s["gamma"], step=0.01, suffix="")
+        gam_layout.addWidget(self.gam)
+        main.addWidget(gam_group)
 
         # Status + Reset
         footer = QHBoxLayout()
@@ -393,8 +310,10 @@ class MainWindow(QMainWindow):
         footer.addWidget(btn_reset)
         main.addLayout(footer)
 
-        # Connect slider
+        # Connect sliders
         self.sat.onChange(self._on_change)
+        self.con.onChange(self._on_change)
+        self.gam.onChange(self._on_change)
 
         self.setStyleSheet(f"""
             QMainWindow {{ background-color: {Theme.BG}; }}
@@ -409,15 +328,22 @@ class MainWindow(QMainWindow):
 
     def _apply(self):
         sat = self.sat.value()
-        ok = set_shader(sat)
-        save_settings({"saturation": sat})
+        con = self.con.value()
+        gam = self.gam.value()
+        ok = set_shader(sat, con, gam)
+        save_settings({"saturation": sat, "contrast": con, "gamma": gam})
         if ok:
-            self.status.setText(f"Sat {sat:.2f}x — shader applied")
+            if abs(sat - 1.0) < 0.001 and abs(con - 1.0) < 0.001 and abs(gam - 1.0) < 0.001:
+                self.status.setText("Valores neutros (1.00) — Shader activo")
+            else:
+                self.status.setText(f"Sat {sat:.2f}x | Con {con:.2f}x | Gam {gam:.2f} — Aplicado")
         else:
-            self.status.setText(f"Sat {sat:.2f}x — ERROR")
+            self.status.setText("Error al recargar Hyprland")
 
     def _reset(self):
         self.sat.setValue(1.0)
+        self.con.setValue(1.0)
+        self.gam.setValue(1.0)
 
 
 def main():
